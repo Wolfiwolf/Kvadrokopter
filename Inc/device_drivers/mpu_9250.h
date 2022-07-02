@@ -4,11 +4,10 @@
 #include "stm32f3xx_hal.h"
 #include "stm32f3xx.h"
 
-struct Angles {
-	float x_angle, y_angle;
-};
+#include "common.h"
 
 void mpu9250_init();
 struct Angles mpu9250_get_axis_data();
+void mpu9250_calibrate();
 
 #endif

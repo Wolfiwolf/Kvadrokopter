@@ -39,6 +39,7 @@ void BNO055_Init() {
 
 static float x_vals[5] = {0};
 static float y_vals[5] = {0};
+static float z_vals[5] = {0};
 
 static void order_array(float *arr) {
 	for(int i = 0; i < 3; ++i) {
@@ -62,6 +63,7 @@ struct Angles BNO055_Get_angles() {
 	struct Angles angles;
 	angles.x_angle = 0.0f;
 	angles.y_angle = 0.0f;
+	angles.z_angle = 0.0f;
 
 
 	// I2C
@@ -71,6 +73,9 @@ struct Angles BNO055_Get_angles() {
 
 	HAL_I2C_Mem_Read(&hi2c1, BNO055_ADDRESS, 0x1E, 1, data, 2, 2000);
 	angles.y_angle = ((int16_t)(data[0] | (data[1] << 8))) / 16.0f;
+
+	HAL_I2C_Mem_Read(&hi2c1, BNO055_ADDRESS, 0x1A, 1, data, 2, 2000);
+	angles.z_angle = ((int16_t)(data[0] | (data[1] << 8))) / 16.0f;
 
 	x_vals[4] = x_vals[3];
 	x_vals[3] = x_vals[2];
@@ -84,16 +89,26 @@ struct Angles BNO055_Get_angles() {
 	y_vals[1] = y_vals[0];
 	y_vals[0] = angles.y_angle;
 
+	z_vals[4] = z_vals[3];
+	z_vals[3] = z_vals[2];
+	z_vals[2] = z_vals[1];
+	z_vals[1] = z_vals[0];
+	z_vals[0] = angles.z_angle;
+
 	float x_values[5];
 	copy_array(x_vals, x_values);
 	float y_values[5];
 	copy_array(y_vals, y_values);
+	float z_values[5];
+	copy_array(z_vals, z_values);
 
 	order_array(x_values);
 	order_array(y_values);
+	order_array(z_values);
 
 	angles.x_angle = y_values[2];
 	angles.y_angle = -x_values[2];
+	angles.z_angle = z_values[2] > 180.0 ? z_values[2] - 360.0f : z_values[2];
 
 
 	return angles;

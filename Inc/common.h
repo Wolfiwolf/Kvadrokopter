@@ -3,7 +3,7 @@
 
 
 struct Angles {
-	float x_angle, y_angle;
+	float x_angle, y_angle, z_angle;
 };
 
 

@@ -20,7 +20,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
-#include "fatfs.h"
 #include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -32,13 +31,14 @@
 #include <stdint.h>
 #include <string.h>
 #include "usbd_cdc_if.h"
-#include "device_drivers/lsm303agr.h"
-#include "device_drivers/l3g4200d.h"
-#include "device_drivers/bno055.h"
+// #include "device_drivers/lsm303agr.h"
+// #include "device_drivers/l3g4200d.h"
+// #include "device_drivers/bno055.h"
+// #include "device_drivers/mpu_9250.h"
+#include "device_drivers/imu.h"
 #include "communications/controller_listener.h"
 #include "vehicle_operations/vehicle_controller.h"
 #include "motors_controls/motors_controls.h"
-#include "logging/logging.h"
 
 /* USER CODE END Includes */
 
@@ -67,10 +67,30 @@ TIM_HandleTypeDef htim3;
 UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart1;
 
-osThreadId motorControlHandle;
-osThreadId tilt_controlHandle;
-osMutexId angle_mutexHandle;
-osMutexId motors_power_mutexHandle;
+/* Definitions for motorControl */
+osThreadId_t motorControlHandle;
+const osThreadAttr_t motorControl_attributes = {
+  .name = "motorControl",
+  .stack_size = 450 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for tilt_control */
+osThreadId_t tilt_controlHandle;
+const osThreadAttr_t tilt_control_attributes = {
+  .name = "tilt_control",
+  .stack_size = 200 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for angle_mutex */
+osMutexId_t angle_mutexHandle;
+const osMutexAttr_t angle_mutex_attributes = {
+  .name = "angle_mutex"
+};
+/* Definitions for motors_power_mutex */
+osMutexId_t motors_power_mutexHandle;
+const osMutexAttr_t motors_power_mutex_attributes = {
+  .name = "motors_power_mutex"
+};
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -84,15 +104,14 @@ static void MX_TIM3_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_UART4_Init(void);
 static void MX_I2C1_Init(void);
-void MotorControl(void const * argument);
-void TiltControl(void const * argument);
+void MotorControl(void *argument);
+void TiltControl(void *argument);
 
 /* USER CODE BEGIN PFP */
 
-float angle_x, angle_y;
+float angle_x, angle_y, angle_z;
 int motors_power;
-float x_angle_offset;
-float y_angle_offset;
+struct MotorSpeeds prev_speeds;
 uint8_t kill;
 
 void micro_delay(uint16_t duration) {
@@ -201,7 +220,6 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_USART1_UART_Init();
-  MX_FATFS_Init();
   MX_UART4_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
@@ -210,14 +228,14 @@ int main(void)
 
   /* USER CODE END 2 */
 
+  /* Init scheduler */
+  osKernelInitialize();
   /* Create the mutex(es) */
-  /* definition and creation of angle_mutex */
-  osMutexDef(angle_mutex);
-  angle_mutexHandle = osMutexCreate(osMutex(angle_mutex));
+  /* creation of angle_mutex */
+  angle_mutexHandle = osMutexNew(&angle_mutex_attributes);
 
-  /* definition and creation of motors_power_mutex */
-  osMutexDef(motors_power_mutex);
-  motors_power_mutexHandle = osMutexCreate(osMutex(motors_power_mutex));
+  /* creation of motors_power_mutex */
+  motors_power_mutexHandle = osMutexNew(&motors_power_mutex_attributes);
 
   /* USER CODE BEGIN RTOS_MUTEX */
 	/* add mutexes, ... */
@@ -237,17 +255,19 @@ int main(void)
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* definition and creation of motorControl */
-  osThreadDef(motorControl, MotorControl, osPriorityNormal, 0, 450);
-  motorControlHandle = osThreadCreate(osThread(motorControl), NULL);
+  /* creation of motorControl */
+  motorControlHandle = osThreadNew(MotorControl, NULL, &motorControl_attributes);
 
-  /* definition and creation of tilt_control */
-  osThreadDef(tilt_control, TiltControl, osPriorityNormal, 0, 200);
-  tilt_controlHandle = osThreadCreate(osThread(tilt_control), NULL);
+  /* creation of tilt_control */
+  tilt_controlHandle = osThreadNew(TiltControl, NULL, &tilt_control_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
 	/* add threads, ... */
   /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+	/* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
 
   /* Start scheduler */
   osKernelStart();
@@ -266,8 +286,6 @@ int main(void)
 	currentMillies = HAL_GetTick();
 	prevMillies = currentMillies;
 	startMillies = currentMillies;
-
-	uint32_t last_speed_change = currentMillies;
 
 	while (1) {
 		// DISTANCE SENSOR CODE
@@ -387,7 +405,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x2000090E;
+  hi2c1.Init.Timing = 0x0000020B;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -674,7 +692,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1|GPIO_PIN_5|L_MOTOR_CW_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1|L_MOTOR_CW_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, GPIO_PIN_0|GPIO_PIN_1, GPIO_PIN_RESET);
@@ -697,8 +715,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB1 PB5 L_MOTOR_CW_Pin */
-  GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_5|L_MOTOR_CW_Pin;
+  /*Configure GPIO pins : PB1 L_MOTOR_CW_Pin */
+  GPIO_InitStruct.Pin = GPIO_PIN_1|L_MOTOR_CW_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -737,7 +755,7 @@ void calibrate_motors() {
  * @retval None
  */
 /* USER CODE END Header_MotorControl */
-void MotorControl(void const * argument)
+void MotorControl(void *argument)
 {
   /* init code for USB_DEVICE */
   MX_USB_DEVICE_Init();
@@ -767,7 +785,6 @@ void MotorControl(void const * argument)
 	uint8_t power_time_counter = 0;
 	uint8_t stop_test = 0;
 
-	struct MotorSpeeds prev_speeds;
 	prev_speeds.m1 = 0.0f;
 	prev_speeds.m2 = 0.0f;
 	prev_speeds.m3 = 0.0f;
@@ -784,92 +801,62 @@ void MotorControl(void const * argument)
 
 		currentMillies = HAL_GetTick();
 
-		// TEST CODE
-
-		HAL_GPIO_WritePin(GPIOE, GPIO_PIN_10, 0);
-		HAL_GPIO_WritePin(GPIOE, GPIO_PIN_11, 0);
-		HAL_GPIO_WritePin(GPIOE, GPIO_PIN_12, 0);
-		HAL_GPIO_WritePin(GPIOE, GPIO_PIN_13, 0);
-		HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 0);
-		if (angle_x > 20) {
-			HAL_GPIO_WritePin(GPIOE, GPIO_PIN_10, 1);
-		} else if (angle_x > 15){
-			HAL_GPIO_WritePin(GPIOE, GPIO_PIN_11, 1);
-		} else if (angle_x > 10){
-			HAL_GPIO_WritePin(GPIOE, GPIO_PIN_12, 1);
-		} else if (angle_x > 5){
-			HAL_GPIO_WritePin(GPIOE, GPIO_PIN_13, 1);
-		} else {
-			HAL_GPIO_WritePin(GPIOE, GPIO_PIN_14, 1);
-		}
-
-		// TEST CODE END
-
 		// MOTORS CONTROL CODE
 		if (currentMillies - startMillies > 1000 && kill == 0) {
 
-			// osMutexAcquire(angle_mutexHandle, osWaitForever);
+			osMutexAcquire(angle_mutexHandle, osWaitForever);
 			float ang_x = angle_x;
 			float ang_y = angle_y;
-			// osMutexRelease(angle_mutexHandle);
+			float ang_z = angle_z;
+			osMutexRelease(angle_mutexHandle);
 
-			// osMutexAcquire(motors_power_mutexHandle, osWaitForever);
+			osMutexAcquire(motors_power_mutexHandle, osWaitForever);
 			int power = motors_power;
-			// osMutexRelease(motors_power_mutexHandle);
+			osMutexRelease(motors_power_mutexHandle);
 
-			if (motors_power > 70)
-				prev_speeds = correct_motors_for_tilt(&htim2, power, -ang_x,
-						ang_y, &prev_speeds);
+			if (motors_power > 50)
+				prev_speeds = correct_motors_for_tilt(&htim2, power, ang_x,
+						ang_y, ang_z, &prev_speeds);
 			else
 				prev_speeds = correct_motors_for_tilt(&htim2, power, 0.0f, 0.0f,
-						&prev_speeds);
-		}
-		/*
-		 */
+						0.0f, &prev_speeds);
 
-		// POWER UP CODE (NO CONTROL)
-		if (currentMillies - last_power_up > 500 && stop_test == 0) {
+			// POWER UP CODE (NO CONTROL)
+			if (currentMillies - last_power_up > 100 && stop_test == 0) {
 
-			if (motors_power != 240) {
-				motors_power += 10;
-			} else {
-				power_time_counter += 1;
-				if (power_time_counter == 20) {
-					stop_test = 1;
+				if (motors_power != 225) {
+					motors_power += 5;
+				} else {
+					power_time_counter += 1;
+					if (power_time_counter == 100) {
+						stop_test = 1;
+					}
 				}
+				last_power_up = currentMillies;
 			}
-			last_power_up = currentMillies;
-		}
 
-		if (currentMillies - last_power_up > 500 && stop_test == 1) {
-			motors_power -= 10;
-			if (motors_power == 0) {
-				stop_test = 2;
+			if (currentMillies - last_power_up > 250 && stop_test == 1) {
+				motors_power -= 5;
+				if (motors_power == 0) {
+					stop_test = 2;
+				}
+				last_power_up = currentMillies;
 			}
-			last_power_up = currentMillies;
 		}
 		/*
-		 */
-
-		// TEST CODE
-		if (currentMillies - last_change > 500) {
-			last_change = currentMillies;
-			HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_9);
-		}
-		/*
-
 		 */
 
 		// DEBUG USB TRANSMIT
-		if (currentMillies - last_transmit > 10) {
+		/*
+		if (currentMillies - last_transmit > 5) {
 			last_transmit = currentMillies;
 			uint8_t buffer[6 * 7];
 			for (int i = 0; i < 6 * 7; ++i)
 				buffer[i] = ' ';
 
 			// Start comment
-			float tempx = angle_x;
-			float tempy = angle_y;
+			float tempx = angle_x * 100.0f;
+			float tempy = angle_y * 100.0f;
 			int angX = roundf(tempx);
 			int angY = roundf(tempy);
 			itoa(angX, (char*) buffer + 6 * 1, 10);
@@ -898,8 +885,8 @@ void MotorControl(void const * argument)
 
 			CDC_Transmit_FS(buffer, 6 * 7);
 		}
-		/*
 		 */
+
 	}
 	/*
   /* USER CODE END 5 */
@@ -907,25 +894,15 @@ void MotorControl(void const * argument)
 
 /* USER CODE BEGIN Header_TiltControl */
 
-
-float x_angle_offset = 0.0f;
-float y_angle_offset = 0.0f;
+struct Angles get_tilt() {
+	return IMU_Get_angles();
+	// return mpu9250_get_axis_data();
+}
 
 void calibrate_tilt() {
-	HAL_Delay(1000);
-	struct Angles angles = BNO055_Get_angles();
-
-	float x_average = 0.0f;
-	float y_average = 0.0f;
-	for(int i = 0; i < 50; ++i) {
-		angles = BNO055_Get_angles();
-		x_average += angles.x_angle;
-		y_average += angles.y_angle;
-		HAL_Delay(10);
-	}
-
-	x_angle_offset = x_average / 50.f;
-	y_angle_offset = y_average / 50.f;
+	HAL_Delay(3000);
+	IMU_Calibrate();
+	// mpu9250_calibrate();
 }
 
 /**
@@ -934,7 +911,7 @@ void calibrate_tilt() {
  * @retval None
  */
 /* USER CODE END Header_TiltControl */
-void TiltControl(void const * argument)
+void TiltControl(void *argument)
 {
   /* USER CODE BEGIN TiltControl */
 	/* Infinite loop */
@@ -945,19 +922,18 @@ void TiltControl(void const * argument)
 	currentMillies = HAL_GetTick();
 	prevMillies = currentMillies;
 
-	// l3g4200d_init(&hi2c1);
-	// lsm303agr_init(&hi2c1);
+
 	// mpu9250_init();
-	BNO055_Init();
+	// BNO055_Init();
+	IMU_Init();
 
 	calibrate_tilt();
 
-	float xAngle = 0.0f, yAngle = 0.0f;
-
-	// osMutexAcquire(angle_mutexHandle, osWaitForever);
+	osMutexAcquire(angle_mutexHandle, osWaitForever);
 	angle_x = 0.0f;
 	angle_y = 0.0f;
-	// osMutexRelease(angle_mutexHandle);
+	angle_z = 0.0f;
+	osMutexRelease(angle_mutexHandle);
 
 	// LOGGING CODE
 	/*
@@ -971,58 +947,13 @@ void TiltControl(void const * argument)
 
 	struct Angles angles;
 	for (;;) {
-		angles = BNO055_Get_angles();
+		angles = get_tilt();
 
-		angle_x = angles.x_angle - x_angle_offset;
-		angle_y = angles.y_angle - y_angle_offset;
-
-
-		// ANGLE CODE
-
-		// ACCELLOMETER CODE
-		 /*
-		 struct AccelerometerAxisData axisData = lsm303agr_get_axis_data(&hi2c1);
-		 axisData.z = -axisData.z;
-
-		 float accelerometer_angle_x = asinf(
-		 axisData.x / (sqrtf(powf(axisData.z, 2) + powf(axisData.x, 2))))
-		 * radian_to_degrees;
-		 float accelerometer_angle_y = asinf(
-		 axisData.y / (sqrtf(powf(axisData.z, 2) + powf(axisData.y, 2))))
-		 * radian_to_degrees;
-		 */
-
-		 // GYRO CODE
-		 /*
-		 struct GyroAxisData gyroAxisData = l3g4200d_get_axis_data(&hi2c1);
-
-		 // COMBINE ANGLES FROM GYRO AND ACCELOMETER
-		 currentMillies = HAL_GetTick();
-		 float deltaTime = (((float) currentMillies) - ((float) prevMillies))
-		 / 1000.0f;
-		 prevMillies = currentMillies;
-
-		 const float accelometer_trust = 0.0004f;
-		 const float gyro_trust = 0.9996f;
-
-		 xAngle =
-		 (xAngle
-		 + deltaTime
-		 * (fabsf(gyroAxisData.y) < 0.1 ?
-		 0.0f : -gyroAxisData.y)) * gyro_trust
-		 + accelerometer_angle_x * accelometer_trust;
-		 yAngle = (yAngle
-		 + deltaTime
-		 * (fabsf(gyroAxisData.x) < 0.1 ? 0.0f : gyroAxisData.x))
-		 * gyro_trust + accelerometer_angle_y * accelometer_trust;
-
-
-		 // osMutexAcquire(angle_mutexHandle, osWaitForever);
-		 angle_x = xAngle + 3.1f;
-		 angle_y = yAngle - 3.9f;
-		 // osMutexRelease(angle_mutexHandle);
-		 */
-
+		osMutexAcquire(angle_mutexHandle, osWaitForever);
+		angle_x = angles.x_angle;
+		angle_y = angles.y_angle;
+		angle_z = angles.z_angle;
+		osMutexRelease(angle_mutexHandle);
 
 		// SAFETY KILL
 		/*
