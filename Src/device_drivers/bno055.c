@@ -54,7 +54,7 @@ static void order_array(float *arr) {
 }
 
 static void copy_array(float *arr_src, float *arr_dest) {
-	for(int i = 0; i < 3; ++i) {
+	for(int i = 0; i < 5; ++i) {
 		arr_dest[i] = arr_src[i];
 	}
 }

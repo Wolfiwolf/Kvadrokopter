@@ -5,9 +5,9 @@
 #include "stm32f3xx.h"
 #include "common.h"
 
-void IMU_Init();
-struct Angles IMU_Get_angles();
-void IMU_Calibrate();
+void IMU_init();
+void IMU_get_axis_data(struct Angles *output);
+void IMU_calibrate();
 
 #endif
 

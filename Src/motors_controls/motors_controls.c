@@ -3,21 +3,15 @@
 
 #include "motors_controls/motors_controls.h"
 
-// Vse na 0, potem dvigni Kd da bo postal nemiren (kot da se trese), potem znizaj da se neha trest, pol pa se znizaj za 25%
-// Dviguj Kp po 0.2 dokler zacne overshootat pol znizaj za 50%
-// Pocasi zvisuj Ki dokler se bea pajtla, pol znizaj za 50%
+#define MOTORS_DEGREES_TO_RADIANS (M_PI / 180.0)
 
-#define PID_Kp 2.0f
-#define PID_Ki 0.0f
-#define PID_Kd 0.02f
-// #define PID_Kd 0.00f
+#define PID_Kp 1.2f
+#define PID_Ki 0.1f
+#define PID_Kd 0.2f
 
-#define TAU 0.000002f
-#define T 0.001f
-
-#define Z_PID_Kp 0.0f
-#define Z_PID_Ki 0.0f
-#define Z_PID_Kd 0.0f
+#define Z_PID_Kp 6.0f
+#define Z_PID_Ki 0.2f
+#define Z_PID_Kd 0.2f
 
 struct TiltPIDData {
 	float prev_angle;
@@ -32,89 +26,51 @@ static struct TiltPIDData pid_data_z;
 
 static uint32_t prev_time;
 
-/*
- int PID_x_angle(float angle) {
- float error = -angle;
-
- float P = error;
- float I = pid_data_x.prev_I + error;
- float D = error - pid_data_x.prev_error;
-
- pid_data_x.prev_I = I;
- pid_data_x.prev_error = error;
-
- int out = PID_Kp * P + PID_Ki * I + PID_Kd * D;
-
- return out;
- }
- */
+extern float x_tilt_set_point;
+extern float y_tilt_set_point;
 
 int PID_x_angle(float angle, float delta_time) {
-	float error = -angle;
+	float error = x_tilt_set_point - angle;
 
-	float P = PID_Kp * error;
-	float I = pid_data_x.prev_I
-			+ 0.5f * PID_Ki * T * (error + pid_data_x.prev_error);
-	float D = -(2.0f * PID_Kd * (angle - pid_data_x.prev_angle)
-			+ (2.0f * TAU - T) * pid_data_x.prev_D) / (2.0f * TAU + T);
-
-	pid_data_x.prev_D = D;
+	float P = error;
+	float I = pid_data_x.prev_I + error * delta_time;
+	float D = (error - pid_data_x.prev_error) / delta_time;
 
 	pid_data_x.prev_I = I;
 	pid_data_x.prev_error = error;
 	pid_data_x.prev_angle = angle;
 
-	int out = P + I + D;
+	int out = PID_Kp * P + PID_Ki * I + PID_Kd * D;
 
 	return out;
 }
 
 int PID_y_angle(float angle, float delta_time) {
-	float error = -angle;
+	float error = y_tilt_set_point - angle;
 
-	float P = PID_Kp * error;
-	float I = pid_data_y.prev_I
-			+ 0.5f * PID_Ki * T * (error + pid_data_y.prev_error);
-	float D = -(2.0f * PID_Kd * (angle - pid_data_y.prev_angle)
-			+ (2.0f * TAU - T) * pid_data_y.prev_D) / (2.0f * TAU + T);
-
-	pid_data_y.prev_D = D;
+	float P = error;
+	float I = pid_data_y.prev_I + error * delta_time;
+	float D = (error - pid_data_y.prev_error) / delta_time;
 
 	pid_data_y.prev_I = I;
 	pid_data_y.prev_error = error;
 	pid_data_y.prev_angle = angle;
 
-	int out = P + I + D;
+	int out = PID_Kp * P + PID_Ki * I + PID_Kd * D;
 
 	return out;
 }
 
-/*
- int PID_y_angle(float angle) {
- float error = -angle;
-
- float P = error;
- float I = pid_data_y.prev_I + error;
- float D = error - pid_data_y.prev_error;
-
- pid_data_y.prev_I = I;
- pid_data_y.prev_error = error;
-
- int out = PID_Kp * P + PID_Ki * I + PID_Kd * D;
-
- return out;
- }
- */
-
-int PID_z_angle(float angle) {
-	float error = -angle;
+int PID_z_angle(float angle, float delta_time) {
+	float error = - angle;
 
 	float P = error;
-	float I = pid_data_z.prev_I + error;
-	float D = error - pid_data_z.prev_error;
+	float I = pid_data_z.prev_I + error * delta_time;
+	float D = (error - pid_data_z.prev_error) / delta_time;
 
 	pid_data_z.prev_I = I;
 	pid_data_z.prev_error = error;
+	pid_data_z.prev_angle = angle;
 
 	int out = Z_PID_Kp * P + Z_PID_Ki * I + Z_PID_Kd * D;
 
@@ -130,19 +86,26 @@ struct MotorSpeeds get_motor_speeds(int current_power, float x_angle,
 	// sin takes in radians
 	const float radian_to_degrees = 57.295779513;
 
-	float P = current_power;
+	float ddx = 0.0f;
+	float ddy = 0.0f;
+	if (x_angle != 90.0f && y_angle != 90.0f) {
+		ddx = tanf(fabsf(x_angle * (float)MOTORS_DEGREES_TO_RADIANS)) * current_power;
+		ddy = tanf(fabsf(y_angle * (float)MOTORS_DEGREES_TO_RADIANS)) * current_power;
+	}
+
+	float P = sqrtf(powf(ddx, 2) + powf(ddy, 2) + powf(current_power, 2));
 
 	uint32_t current_time = HAL_GetTick();
 	float delta_time = (current_time - prev_PID_time) / 1000.0f;
 	prev_PID_time = current_time;
 	int x_tilt = PID_x_angle(x_angle, delta_time);
 	int y_tilt = PID_y_angle(y_angle, delta_time);
-	int z_tilt = PID_z_angle(z_angle);
+	int z_tilt = PID_z_angle(z_angle, delta_time);
 
-	speeds.m1 = P + y_tilt + x_tilt + z_tilt;
-	speeds.m2 = P + y_tilt - x_tilt - z_tilt;
-	speeds.m3 = P - y_tilt + x_tilt - z_tilt;
-	speeds.m4 = P - y_tilt - x_tilt + z_tilt;
+	speeds.m1 = P + y_tilt - x_tilt + z_tilt;
+	speeds.m2 = P + y_tilt + x_tilt - z_tilt;
+	speeds.m3 = P - y_tilt - x_tilt - z_tilt;
+	speeds.m4 = P - y_tilt + x_tilt + z_tilt;
 
 	return speeds;
 }
@@ -167,38 +130,31 @@ uint8_t set_BR_motor_speed(TIM_HandleTypeDef *htim2, int speed) {
 	return 0;
 }
 
+static uint32_t prev_time;
 struct MotorSpeeds correct_motors_for_tilt(TIM_HandleTypeDef *htim2,
 		int current_power, float x_tilt_angle, float y_tilt_angle,
 		float z_tilt_angle, struct MotorSpeeds *prev_speeds) {
 
-	// uint32_t current_time = HAL_GetTick();
-	// if (current_time - prev_time > 5) {
-	struct MotorSpeeds speeds = get_motor_speeds(current_power, x_tilt_angle,
-			y_tilt_angle, z_tilt_angle);
+	uint32_t current = HAL_GetTick();
+	if (current - prev_time > 5) {
+		prev_time = current;
+		struct MotorSpeeds speeds = get_motor_speeds(current_power,
+				x_tilt_angle, y_tilt_angle, z_tilt_angle);
 
-	speeds.m1 = speeds.m1 < 0 ? 0 : speeds.m1;
-	speeds.m2 = speeds.m2 < 0 ? 0 : speeds.m2;
-	speeds.m3 = speeds.m3 < 0 ? 0 : speeds.m3;
-	speeds.m4 = speeds.m4 < 0 ? 0 : speeds.m4;
+		speeds.m1 = speeds.m1 < 0 ? 0 : speeds.m1;
+		speeds.m2 = speeds.m2 < 0 ? 0 : speeds.m2;
+		speeds.m3 = speeds.m3 < 0 ? 0 : speeds.m3;
+		speeds.m4 = speeds.m4 < 0 ? 0 : speeds.m4;
 
-	if (current_power == 0) {
-		speeds.m1 = 0;
-		speeds.m2 = 0;
-		speeds.m3 = 0;
-		speeds.m4 = 0;
+		set_FL_motor_speed(htim2, speeds.m1);
+		set_FR_motor_speed(htim2, speeds.m2);
+		set_BL_motor_speed(htim2, speeds.m3);
+		set_BR_motor_speed(htim2, speeds.m4);
+
+		return speeds;
+	} else {
+		return *prev_speeds;
 	}
-
-	set_FL_motor_speed(htim2, speeds.m1);
-	set_FR_motor_speed(htim2, speeds.m2);
-	set_BL_motor_speed(htim2, speeds.m3);
-	set_BR_motor_speed(htim2, speeds.m4);
-
-	//	prev_time = current_time;
-
-	return speeds;
-	// } else {
-//		return *prev_speeds;
-	//}
 
 }
 

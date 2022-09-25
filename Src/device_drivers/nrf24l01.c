@@ -1,5 +1,6 @@
 #include "device_drivers/nrf24l01.h"
 
+/*
 static void dissable_chip() {
 	HAL_GPIO_WritePin(GPIOE, GPIO_PIN_7, GPIO_PIN_RESET);
 	HAL_Delay(20);
@@ -161,3 +162,5 @@ void nrf24l01_Receive(SPI_HandleTypeDef *hspi, uint8_t *data) {
 	cmd = 0xE2;
 	HAL_SPI_Transmit(hspi, &cmd, 1, 1000);
 }
+
+*/
